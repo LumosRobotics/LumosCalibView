@@ -32,6 +32,10 @@ find_package(Qt6 COMPONENTS Core Widgets QUIET)
 # Nlohmann
 include_directories(${CMAKE_SOURCE_DIR}/third_party/nlohmann/include)
 
+include_directories(${CMAKE_SOURCE_DIR}/third_party/lumos/src)
+
+include_directories(${CMAKE_SOURCE_DIR}/src)
+
 add_compile_options(-Wall -Wextra -pedantic)
 
 # Only add repl_gui if Qt6 is found

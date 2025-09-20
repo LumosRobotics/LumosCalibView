@@ -7,3 +7,6 @@
 [submodule "third_party/lumos"]
 	path = third_party/lumos
 	url = git@github.com:LumosRobotics/LumosAlgo.git
+[submodule "third_party/freetype-gl"]
+	path = third_party/freetype-gl
+	url = git@github.com:rougier/freetype-gl.git

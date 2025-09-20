@@ -5,6 +5,11 @@ if(NOT Qt6_FOUND)
     return()
 endif()
 
+set(MODULE_SOURCE_FILES
+    ${CMAKE_SOURCE_DIR}/src/modules/view_angles.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/plot_view.cpp
+)
+
 # Application source files
 set(APP_SOURCE_FILES 
     main.cpp 
@@ -26,11 +31,13 @@ target_include_directories(simple PRIVATE
 )
 
 # Find required Qt6 components
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Network OpenGL OpenGLWidgets)
 
 # Qt6 libraries for both targets
 target_link_libraries(simple PRIVATE
     Qt6::Core
     Qt6::Widgets
     Qt6::Network
+    Qt6::OpenGL
+    Qt6::OpenGLWidgets
 )
