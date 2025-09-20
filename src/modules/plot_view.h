@@ -14,6 +14,7 @@
 #include <QVector3D>
 #include <vector>
 #include "view_angles.h"
+#include "data_receiver.h"
 
 class PlotView : public QOpenGLWidget, protected QOpenGLFunctions
 {
@@ -38,6 +39,11 @@ public:
         PAN_MODE
     };
 
+    enum ProjectionMode {
+        PERSPECTIVE_PROJECTION,
+        ORTHOGRAPHIC_PROJECTION
+    };
+
     explicit PlotView(QWidget *parent = nullptr);
     ~PlotView() override;
 
@@ -58,6 +64,24 @@ public:
     // View control
     void resetView();
     void setViewAngles(double azimuth, double elevation);
+    
+    // Projection control
+    void toggleProjectionMode();
+    void setProjectionMode(ProjectionMode mode);
+    ProjectionMode getProjectionMode() const;
+    void increaseFOV();
+    void decreaseFOV();
+    void setFOV(float fov);
+    float getFOV() const;
+    
+    // Real-time data
+    void startDataReceiver(quint16 port = 8080);
+    void stopDataReceiver();
+    void connectToDataSource(const QString& host, quint16 port);
+    void setRealTimeMode(bool enabled);
+    void setMaxRealTimePoints(int maxPoints);
+    
+    bool isReceivingData() const;
 
 protected:
     void initializeGL() override;
@@ -73,6 +97,9 @@ protected:
 
 private slots:
     void updateAnimation();
+    void onNewDataReceived();
+    void onDataReceiverConnected(bool connected);
+    void onDataReceiverError(const QString& error);
 
 private:
     void setupShaders();
@@ -114,6 +141,10 @@ private:
     float m_zoom;
     QVector3D m_panOffset;
     
+    // Projection state
+    ProjectionMode m_projectionMode;
+    float m_fov;
+    
     // Mouse interaction
     QPoint m_lastMousePos;
     bool m_mousePressed;
@@ -125,4 +156,11 @@ private:
     
     // Labels
     QString m_xLabel, m_yLabel, m_zLabel;
+    
+    // Real-time data
+    DataReceiver* m_dataReceiver;
+    QThread* m_dataThread;
+    bool m_realTimeMode;
+    int m_maxRealTimePoints;
+    std::vector<DataPoint> m_realTimeBuffer;
 };

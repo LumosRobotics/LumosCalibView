@@ -8,6 +8,8 @@ endif()
 set(MODULE_SOURCE_FILES
     ${CMAKE_SOURCE_DIR}/src/modules/view_angles.cpp
     ${CMAKE_SOURCE_DIR}/src/modules/plot_view.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/data_receiver.cpp
+    ${CMAKE_SOURCE_DIR}/src/modules/multi_plot_container.cpp
 )
 
 # Application source files
