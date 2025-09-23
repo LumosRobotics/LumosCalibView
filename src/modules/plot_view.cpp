@@ -5,14 +5,14 @@
 #include <cmath>
 
 PlotView::PlotView(QWidget *parent)
-    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_plotMode(PLOT_3D), m_showGrid(true), m_showAxes(true), m_zoom(1.0f), m_panOffset(0.0f, 0.0f, 0.0f), m_projectionMode(PERSPECTIVE_PROJECTION), m_fov(45.0f), m_mousePressed(false), m_interactionMode(ROTATE_MODE), m_animationTime(0.0f), m_dataReceiver(nullptr), m_dataThread(nullptr), m_realTimeMode(false), m_maxRealTimePoints(1000)
+    : QOpenGLWidget(parent), m_shaderProgram(nullptr), m_plotMode(PLOT_3D), m_showGrid(true), m_showAxes(false), m_zoom(1.0f), m_panOffset(0.0f, 0.0f, 0.0f), m_projectionMode(PERSPECTIVE_PROJECTION), m_fov(45.0f), m_mousePressed(false), m_interactionMode(ROTATE_MODE), m_animationTime(0.0f), m_dataReceiver(nullptr), m_dataThread(nullptr), m_realTimeMode(false), m_maxRealTimePoints(1000)
 {
     m_animationTimer = new QTimer(this);
     connect(m_animationTimer, &QTimer::timeout, this, &PlotView::updateAnimation);
     m_animationTimer->start(16); // ~60 FPS
 
-    // Initialize view angles for a nice 3D perspective
-    m_viewAngles.setAngles(M_PI / 4, M_PI / 6);
+    // Initialize view angles for 3D plotting with X right, Y up
+    m_viewAngles.setAngles(0.0, 0.0);
 
     // Enable keyboard focus for key events
     setFocusPolicy(Qt::StrongFocus);
@@ -30,7 +30,7 @@ PlotView::~PlotView()
 void PlotView::initializeGL()
 {
     initializeOpenGLFunctions();
-    glClearColor(0.05f, 0.05f, 0.1f, 1.0f);
+    glClearColor(1.0f, 1.0f, 1.0f, 1.0f); // White background
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_BLEND);
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
@@ -41,6 +41,8 @@ void PlotView::initializeGL()
     setupBuffers();
     createGridData();
     createAxisData();
+    createOriginPlaneData();
+    createBackgroundPlaneData();
 }
 
 void PlotView::setupShaders()
@@ -89,36 +91,138 @@ void PlotView::setupBuffers()
     // Axis VAO
     m_axisVAO.create();
     m_axisVertexBuffer.create();
+
+    // Origin plane VAO
+    m_originPlaneVAO.create();
+    m_originPlaneVertexBuffer.create();
+
+    // Background plane VAO
+    m_backgroundPlaneVAO.create();
+    m_backgroundPlaneVertexBuffer.create();
 }
 
 void PlotView::createGridData()
 {
     m_gridVertices.clear();
 
-    const float gridSize = 5.0f;
-    const int gridLines = 21;
-    const float step = gridSize * 2.0f / (gridLines - 1);
+    // Dynamic grid spacing based on zoom level
+    const float step = calculateOptimalGridStep();
+    const float visibleSize = getVisibleWorldSize();
+    const float boxSize = visibleSize * 0.6f; // Size of the grid box
 
-    // Grid lines parallel to X-axis
-    for (int i = 0; i < gridLines; ++i)
+    // Get current view angles to determine which box faces are visible
+    const double azimuth = m_viewAngles.getAzimuth();
+    const double elevation = m_viewAngles.getElevation();
+
+    // Box frame stays centered at origin, but grid lines shift with panning
+    const float boxHalfSize = boxSize * 0.5f;
+    const float boxMinX = -boxHalfSize;
+    const float boxMaxX = boxHalfSize;
+    const float boxMinY = -boxHalfSize;
+    const float boxMaxY = boxHalfSize;
+    const float boxMinZ = -boxHalfSize;
+    const float boxMaxZ = boxHalfSize;
+
+    // Create a smooth sliding grid within the fixed box frame
+    // The pan offset creates fractional shifts that make lines slide continuously
+
+    // Calculate fractional offset within one grid step
+    // Grid lines should move in same direction as pan for intuitive behavior
+    const float fracOffsetX = fmod(m_panOffset.x(), step);
+    const float fracOffsetY = fmod(m_panOffset.y(), step);
+    const float fracOffsetZ = -fmod(m_panOffset.z(), step);
+
+    // Create enough grid lines to cover the box plus some margin for sliding
+    const float margin = step * 2.0f; // Extra lines for smooth sliding
+    const float extendedMinX = boxMinX - margin;
+    const float extendedMaxX = boxMaxX + margin;
+    const float extendedMinY = boxMinY - margin;
+    const float extendedMaxY = boxMaxY + margin;
+    const float extendedMinZ = boxMinZ - margin;
+    const float extendedMaxZ = boxMaxZ + margin;
+
+    // Calculate grid line positions, including fractional offset for smooth sliding
+    const int startX = (int)floor(extendedMinX / step);
+    const int endX = (int)ceil(extendedMaxX / step);
+    const int startY = (int)floor(extendedMinY / step);
+    const int endY = (int)ceil(extendedMaxY / step);
+    const int startZ = (int)floor(extendedMinZ / step);
+    const int endZ = (int)ceil(extendedMaxZ / step);
+
+    // Determine which box faces to show based on viewing direction
+    // Use sin/cos to determine if we're looking from positive or negative side
+    const bool showPositiveZ = cos(elevation) * cos(azimuth) > 0; // Looking towards +Z
+    const bool showPositiveY = sin(elevation) > 0;                // Looking towards +Y
+    const bool showPositiveX = cos(elevation) * sin(azimuth) > 0; // Looking towards +X
+
+    // Select Z plane position (XY plane at far Z)
+    const float zPlane = showPositiveZ ? boxMinZ : boxMaxZ;
+
+    // Select Y plane position (XZ plane at far Y)
+    const float yPlane = showPositiveY ? boxMinY : boxMaxY;
+
+    // Select X plane position (YZ plane at far X)
+    const float xPlane = showPositiveX ? boxMaxX : boxMinX;
+
+    // Grid colors - black on white background
+    const float mainColor[3] = {0.0f, 0.0f, 0.0f}; // Main planes - black
+    const float sideColor[3] = {0.2f, 0.2f, 0.2f}; // Side planes - dark gray
+
+    // XY Plane Grid (at far Z position)
+    // Vertical lines (parallel to Y-axis) - slide with fractional X offset
+    for (int i = startX; i <= endX; ++i)
     {
-        float z = -gridSize + i * step;
-        // Line from (-gridSize, 0, z) to (gridSize, 0, z)
-        m_gridVertices.insert(m_gridVertices.end(), {
-                                                        -gridSize, 0.0f, z, 0.4f, 0.4f, 0.4f, // start point
-                                                        gridSize, 0.0f, z, 0.4f, 0.4f, 0.4f   // end point
-                                                    });
+        float x = i * step + fracOffsetX; // Add fractional offset for smooth sliding
+
+        m_gridVertices.insert(m_gridVertices.end(), {x, boxMinY, zPlane, mainColor[0], mainColor[1], mainColor[2],
+                                                     x, boxMaxY, zPlane, mainColor[0], mainColor[1], mainColor[2]});
     }
 
-    // Grid lines parallel to Z-axis
-    for (int i = 0; i < gridLines; ++i)
+    // Horizontal lines (parallel to X-axis) - slide with fractional Y offset
+    for (int i = startY; i <= endY; ++i)
     {
-        float x = -gridSize + i * step;
-        // Line from (x, 0, -gridSize) to (x, 0, gridSize)
-        m_gridVertices.insert(m_gridVertices.end(), {
-                                                        x, 0.0f, -gridSize, 0.4f, 0.4f, 0.4f, // start point
-                                                        x, 0.0f, gridSize, 0.4f, 0.4f, 0.4f   // end point
-                                                    });
+        float y = i * step + fracOffsetY; // Add fractional offset for smooth sliding
+
+        m_gridVertices.insert(m_gridVertices.end(), {boxMinX, y, zPlane, mainColor[0], mainColor[1], mainColor[2],
+                                                     boxMaxX, y, zPlane, mainColor[0], mainColor[1], mainColor[2]});
+    }
+
+    // XZ Plane Grid (at far Y position)
+    // Lines parallel to X-axis - slide with fractional Z offset
+    for (int i = startZ; i <= endZ; ++i)
+    {
+        float z = i * step + fracOffsetZ; // Add fractional offset for smooth sliding
+
+        m_gridVertices.insert(m_gridVertices.end(), {boxMinX, yPlane, z, sideColor[0], sideColor[1], sideColor[2],
+                                                     boxMaxX, yPlane, z, sideColor[0], sideColor[1], sideColor[2]});
+    }
+
+    // Lines parallel to Z-axis - slide with fractional X offset
+    for (int i = startX; i <= endX; ++i)
+    {
+        float x = i * step + fracOffsetX; // Add fractional offset for smooth sliding
+
+        m_gridVertices.insert(m_gridVertices.end(), {x, yPlane, boxMinZ, sideColor[0], sideColor[1], sideColor[2],
+                                                     x, yPlane, boxMaxZ, sideColor[0], sideColor[1], sideColor[2]});
+    }
+
+    // YZ Plane Grid (at far X position)
+    // Lines parallel to Y-axis - slide with fractional Z offset
+    for (int i = startZ; i <= endZ; ++i)
+    {
+        float z = i * step + fracOffsetZ; // Add fractional offset for smooth sliding
+
+        m_gridVertices.insert(m_gridVertices.end(), {xPlane, boxMinY, z, sideColor[0], sideColor[1], sideColor[2],
+                                                     xPlane, boxMaxY, z, sideColor[0], sideColor[1], sideColor[2]});
+    }
+
+    // Lines parallel to Z-axis - slide with fractional Y offset
+    for (int i = startY; i <= endY; ++i)
+    {
+        float y = i * step + fracOffsetY; // Add fractional offset for smooth sliding
+
+        m_gridVertices.insert(m_gridVertices.end(), {xPlane, y, boxMinZ, sideColor[0], sideColor[1], sideColor[2],
+                                                     xPlane, y, boxMaxZ, sideColor[0], sideColor[1], sideColor[2]});
     }
 
     m_gridVAO.bind();
@@ -189,6 +293,51 @@ void PlotView::createAxisData()
     m_axisVAO.release();
 }
 
+void PlotView::createOriginPlaneData()
+{
+    m_originPlaneVertices.clear();
+
+    // Get current view parameters to determine line extent
+    const float visibleSize = getVisibleWorldSize();
+    const float extent = visibleSize * 1.0f; // Make lines extend beyond visible area
+
+    // Origin plane line color - darker than grid for emphasis
+    const float originColor[3] = {0.0f, 0.0f, 0.0f};
+
+    // X-axis line (horizontal line through origin)
+    m_originPlaneVertices.insert(m_originPlaneVertices.end(), {-extent, 0.0f, 0.0f, originColor[0], originColor[1], originColor[2],
+                                                               extent, 0.0f, 0.0f, originColor[0], originColor[1], originColor[2]});
+
+    // Y-axis line (vertical line through origin)
+    m_originPlaneVertices.insert(m_originPlaneVertices.end(), {0.0f, -extent, 0.0f, originColor[0], originColor[1], originColor[2],
+                                                               0.0f, extent, 0.0f, originColor[0], originColor[1], originColor[2]});
+
+    // Z-axis line (depth line through origin)
+    m_originPlaneVertices.insert(m_originPlaneVertices.end(), {0.0f, 0.0f, -extent, originColor[0], originColor[1], originColor[2],
+                                                               0.0f, 0.0f, extent, originColor[0], originColor[1], originColor[2]});
+
+    m_originPlaneVAO.bind();
+    m_originPlaneVertexBuffer.bind();
+    m_originPlaneVertexBuffer.allocate(m_originPlaneVertices.data(), m_originPlaneVertices.size() * sizeof(float));
+
+    int posLocation = m_shaderProgram->attributeLocation("aPosition");
+    int colorLocation = m_shaderProgram->attributeLocation("aColor");
+
+    if (posLocation >= 0)
+    {
+        glVertexAttribPointer(posLocation, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)0);
+        glEnableVertexAttribArray(posLocation);
+    }
+
+    if (colorLocation >= 0)
+    {
+        glVertexAttribPointer(colorLocation, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)(3 * sizeof(float)));
+        glEnableVertexAttribArray(colorLocation);
+    }
+
+    m_originPlaneVAO.release();
+}
+
 void PlotView::paintGL()
 {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -200,7 +349,9 @@ void PlotView::paintGL()
 
     if (m_showGrid)
     {
+        renderBackgroundPlanes(); // Render solid background planes first
         renderGrid();
+        renderOriginPlanes(); // Always show origin plane lines when grid is shown
     }
 
     if (m_showAxes)
@@ -222,10 +373,8 @@ void PlotView::paintEvent(QPaintEvent *event)
     QPainter painter(this);
     painter.setRenderHint(QPainter::Antialiasing);
 
-    if (m_showAxes)
-    {
-        renderAxisNumbers(painter);
-    }
+    // Always render axis numbers even if axis lines are disabled
+    renderAxisNumbers(painter);
 
     // Show current interaction mode
     renderInteractionMode(painter);
@@ -235,9 +384,28 @@ void PlotView::paintEvent(QPaintEvent *event)
 
 void PlotView::renderGrid()
 {
+    // Create a view matrix without pan offset for grid lines (same as background planes)
+    QMatrix4x4 gridView;
+    gridView.translate(0.0f, 0.0f, -10.0f * m_zoom);
+    // Skip applying m_panOffset here - this keeps grid aligned with background planes
+
+    if (m_plotMode == PLOT_3D)
+    {
+        gridView.rotate(m_viewAngles.getElevation() * 180.0 / M_PI, 1.0f, 0.0f, 0.0f);
+        gridView.rotate(m_viewAngles.getAzimuth() * 180.0 / M_PI, 0.0f, 1.0f, 0.0f);
+    }
+
+    // Set the pan-independent MVP matrix for grid lines
+    QMatrix4x4 gridMVP = getProjectionMatrix() * gridView;
+    m_shaderProgram->setUniformValue("uMVPMatrix", gridMVP);
+
     m_gridVAO.bind();
     glDrawArrays(GL_LINES, 0, m_gridVertices.size() / 6);
     m_gridVAO.release();
+
+    // Restore the normal MVP matrix for subsequent rendering
+    QMatrix4x4 normalMVP = getProjectionMatrix() * getViewMatrix();
+    m_shaderProgram->setUniformValue("uMVPMatrix", normalMVP);
 }
 
 void PlotView::renderAxes()
@@ -247,6 +415,141 @@ void PlotView::renderAxes()
     glDrawArrays(GL_LINES, 0, m_axisVertices.size() / 6);
     m_axisVAO.release();
     glLineWidth(1.5f);
+}
+
+void PlotView::renderOriginPlanes()
+{
+    glLineWidth(2.5f); // Thicker than grid (1.5f) but thinner than axis lines (3.0f)
+    m_originPlaneVAO.bind();
+    glDrawArrays(GL_LINES, 0, m_originPlaneVertices.size() / 6);
+    m_originPlaneVAO.release();
+    glLineWidth(1.5f); // Reset to default
+}
+
+void PlotView::createBackgroundPlaneData()
+{
+    m_backgroundPlaneVertices.clear();
+
+    // Get current view parameters to determine which planes to show
+    const double azimuth = m_viewAngles.getAzimuth();
+    const double elevation = m_viewAngles.getElevation();
+
+    // Calculate box size to maintain constant visual appearance
+    // The planes should appear the same size regardless of zoom/pan
+    const float visibleSize = getVisibleWorldSize();
+
+    // Use different size multipliers for different projection modes
+    float sizeMultiplier;
+    if (m_projectionMode == ORTHOGRAPHIC_PROJECTION)
+    {
+        sizeMultiplier = 0.8f; // Smaller in orthographic mode
+    }
+    else
+    {
+        sizeMultiplier = 1.5f; // Larger in perspective mode
+    }
+
+    const float boxSize = visibleSize * sizeMultiplier;
+    const float boxHalfSize = boxSize * 0.5f;
+
+    // Keep the box centered at origin - don't move with panning
+    // The large size ensures it always provides backdrop regardless of pan position
+    const float boxMinX = -boxHalfSize;
+    const float boxMaxX = boxHalfSize;
+    const float boxMinY = -boxHalfSize;
+    const float boxMaxY = boxHalfSize;
+    const float boxMinZ = -boxHalfSize;
+    const float boxMaxZ = boxHalfSize;
+
+    // Determine which box faces to show based on viewing direction
+    const bool showPositiveZ = cos(elevation) * cos(azimuth) > 0;
+    const bool showPositiveY = sin(elevation) > 0;
+    const bool showPositiveX = cos(elevation) * sin(azimuth) > 0;
+
+    // Select plane positions (far edges of the box)
+    const float zPlane = showPositiveZ ? boxMinZ : boxMaxZ;
+    const float yPlane = showPositiveY ? boxMinY : boxMaxY;
+    const float xPlane = showPositiveX ? boxMaxX : boxMinX;
+
+    // 80% grey color (0.8, 0.8, 0.8)
+    const float bgColor[3] = {0.8f, 0.8f, 0.8f};
+
+    // XY Plane (at far Z position) - create two triangles to form a rectangle
+    m_backgroundPlaneVertices.insert(m_backgroundPlaneVertices.end(), {// Triangle 1
+                                                                       boxMinX, boxMinY, zPlane, bgColor[0], bgColor[1], bgColor[2],
+                                                                       boxMaxX, boxMinY, zPlane, bgColor[0], bgColor[1], bgColor[2],
+                                                                       boxMaxX, boxMaxY, zPlane, bgColor[0], bgColor[1], bgColor[2],
+                                                                       // Triangle 2
+                                                                       boxMinX, boxMinY, zPlane, bgColor[0], bgColor[1], bgColor[2],
+                                                                       boxMaxX, boxMaxY, zPlane, bgColor[0], bgColor[1], bgColor[2],
+                                                                       boxMinX, boxMaxY, zPlane, bgColor[0], bgColor[1], bgColor[2]});
+
+    // XZ Plane (at far Y position)
+    m_backgroundPlaneVertices.insert(m_backgroundPlaneVertices.end(), {// Triangle 1
+                                                                       boxMinX, yPlane, boxMinZ, bgColor[0], bgColor[1], bgColor[2],
+                                                                       boxMaxX, yPlane, boxMinZ, bgColor[0], bgColor[1], bgColor[2],
+                                                                       boxMaxX, yPlane, boxMaxZ, bgColor[0], bgColor[1], bgColor[2],
+                                                                       // Triangle 2
+                                                                       boxMinX, yPlane, boxMinZ, bgColor[0], bgColor[1], bgColor[2],
+                                                                       boxMaxX, yPlane, boxMaxZ, bgColor[0], bgColor[1], bgColor[2],
+                                                                       boxMinX, yPlane, boxMaxZ, bgColor[0], bgColor[1], bgColor[2]});
+
+    // YZ Plane (at far X position)
+    m_backgroundPlaneVertices.insert(m_backgroundPlaneVertices.end(), {// Triangle 1
+                                                                       xPlane, boxMinY, boxMinZ, bgColor[0], bgColor[1], bgColor[2],
+                                                                       xPlane, boxMaxY, boxMinZ, bgColor[0], bgColor[1], bgColor[2],
+                                                                       xPlane, boxMaxY, boxMaxZ, bgColor[0], bgColor[1], bgColor[2],
+                                                                       // Triangle 2
+                                                                       xPlane, boxMinY, boxMinZ, bgColor[0], bgColor[1], bgColor[2],
+                                                                       xPlane, boxMaxY, boxMaxZ, bgColor[0], bgColor[1], bgColor[2],
+                                                                       xPlane, boxMinY, boxMaxZ, bgColor[0], bgColor[1], bgColor[2]});
+
+    m_backgroundPlaneVAO.bind();
+    m_backgroundPlaneVertexBuffer.bind();
+    m_backgroundPlaneVertexBuffer.allocate(m_backgroundPlaneVertices.data(), m_backgroundPlaneVertices.size() * sizeof(float));
+
+    int posLocation = m_shaderProgram->attributeLocation("aPosition");
+    int colorLocation = m_shaderProgram->attributeLocation("aColor");
+
+    if (posLocation >= 0)
+    {
+        glVertexAttribPointer(posLocation, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)0);
+        glEnableVertexAttribArray(posLocation);
+    }
+
+    if (colorLocation >= 0)
+    {
+        glVertexAttribPointer(colorLocation, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void *)(3 * sizeof(float)));
+        glEnableVertexAttribArray(colorLocation);
+    }
+
+    m_backgroundPlaneVAO.release();
+}
+
+void PlotView::renderBackgroundPlanes()
+{
+    // Create a view matrix without pan offset for background planes
+    QMatrix4x4 backgroundView;
+    backgroundView.translate(0.0f, 0.0f, -10.0f * m_zoom);
+    // Skip applying m_panOffset here - this keeps planes centered in view
+
+    if (m_plotMode == PLOT_3D)
+    {
+        backgroundView.rotate(m_viewAngles.getElevation() * 180.0 / M_PI, 1.0f, 0.0f, 0.0f);
+        backgroundView.rotate(m_viewAngles.getAzimuth() * 180.0 / M_PI, 0.0f, 1.0f, 0.0f);
+    }
+
+    // Set the pan-independent MVP matrix for background planes
+    QMatrix4x4 backgroundMVP = getProjectionMatrix() * backgroundView;
+    m_shaderProgram->setUniformValue("uMVPMatrix", backgroundMVP);
+
+    m_backgroundPlaneVAO.bind();
+    glDrawArrays(GL_TRIANGLES, 0, m_backgroundPlaneVertices.size() / 6);
+    m_backgroundPlaneVAO.release();
+
+    // Restore the normal MVP matrix for subsequent rendering
+    QMatrix4x4 normalMVP = getProjectionMatrix() * getViewMatrix();
+    m_shaderProgram->setUniformValue("uMVPMatrix", normalMVP);
 }
 
 void PlotView::renderData()
@@ -364,6 +667,9 @@ void PlotView::mouseMoveEvent(QMouseEvent *event)
             double deltaAzimuth = delta.x() * 0.01;
             double deltaElevation = delta.y() * 0.01;
             m_viewAngles.changeAnglesWithDelta(deltaAzimuth, deltaElevation);
+            createGridData();            // Update grid for new view angles
+            createOriginPlaneData();     // Update origin planes for new view angles
+            createBackgroundPlaneData(); // Update background planes for new view angles
         }
         break;
 
@@ -371,14 +677,32 @@ void PlotView::mouseMoveEvent(QMouseEvent *event)
     {
         float zoomFactor = 1.0f + (-delta.y() * 0.01f);
         m_zoom = qMax(0.1f, qMin(5.0f, m_zoom * zoomFactor));
+        createGridData();            // Update grid for new zoom level
+        createOriginPlaneData();     // Update origin planes for new zoom level
+        createBackgroundPlaneData(); // Update background planes to maintain constant visual size
     }
     break;
 
     case PAN_MODE:
     {
         float panSpeed = 0.01f * m_zoom;
-        m_panOffset.setX(m_panOffset.x() + delta.x() * panSpeed);
-        m_panOffset.setY(m_panOffset.y() - delta.y() * panSpeed); // Invert Y for intuitive panning
+        
+        // Check if Shift key is pressed for Z-panning
+        if (event->modifiers() & Qt::ShiftModifier)
+        {
+            // Shift+drag for Z-panning: horizontal mouse movement controls Z
+            m_panOffset.setZ(m_panOffset.z() + delta.x() * panSpeed);
+        }
+        else
+        {
+            // Normal XY panning
+            m_panOffset.setX(m_panOffset.x() + delta.x() * panSpeed);
+            m_panOffset.setY(m_panOffset.y() - delta.y() * panSpeed); // Invert Y for intuitive panning
+        }
+        
+        createGridData();                                         // Update grid lines to shift within the fixed box frame
+        createOriginPlaneData();                                  // Update origin planes for new pan position
+        // Background planes stay centered and don't need updates for panning
     }
     break;
     }
@@ -397,6 +721,9 @@ void PlotView::wheelEvent(QWheelEvent *event)
 {
     float zoomFactor = 1.0f + (event->angleDelta().y() / 1200.0f);
     m_zoom = qMax(0.1f, qMin(5.0f, m_zoom * zoomFactor));
+    createGridData();            // Update grid for new zoom level
+    createOriginPlaneData();     // Update origin planes for new zoom level
+    createBackgroundPlaneData(); // Update background planes to maintain constant visual size
     update();
 }
 
@@ -488,6 +815,10 @@ void PlotView::resetView()
 {
     m_viewAngles.setAngles(M_PI / 4, M_PI / 6);
     m_zoom = 1.0f;
+    m_panOffset = QVector3D(0.0f, 0.0f, 0.0f);
+    createGridData();            // Update grid for reset zoom level
+    createOriginPlaneData();     // Update origin planes for reset zoom level
+    createBackgroundPlaneData(); // Update background planes for reset view
     update();
 }
 
@@ -527,27 +858,82 @@ QVector3D PlotView::worldToScreen(const QVector3D &worldPos) const
 
 void PlotView::renderAxisNumbers(QPainter &painter)
 {
-    painter.setPen(QPen(Qt::white, 1));
-    painter.setFont(QFont("Arial", 9));
+    painter.setPen(QPen(Qt::black, 1));
+    painter.setFont(QFont("Arial", 8));
 
-    const float axisLength = 6.0f;
-    const int numTicks = 6;
+    // Dynamic grid parameters matching createGridData()
+    const float step = calculateOptimalGridStep();
+    const float visibleSize = getVisibleWorldSize();
+    const float boxSize = visibleSize * 0.6f;
 
-    // X-axis numbers
-    for (int i = 0; i <= numTicks; ++i)
+    // Get current view angles to determine which box faces are visible (matching createGridData)
+    const double azimuth = m_viewAngles.getAzimuth();
+    const double elevation = m_viewAngles.getElevation();
+
+    // Box frame stays centered at origin, but grid lines shift with panning (matching createGridData)
+    const float boxHalfSize = boxSize * 0.5f;
+    const float boxMinX = -boxHalfSize;
+    const float boxMaxX = boxHalfSize;
+    const float boxMinY = -boxHalfSize;
+    const float boxMaxY = boxHalfSize;
+    const float boxMinZ = -boxHalfSize;
+    const float boxMaxZ = boxHalfSize;
+
+    // With smooth sliding grid, numbers should show actual world coordinates (matching createGridData)
+
+    // Calculate fractional offset within one grid step (matching createGridData)
+    // Grid lines should move in same direction as pan for intuitive behavior
+    const float fracOffsetX = fmod(m_panOffset.x(), step);
+    const float fracOffsetY = fmod(m_panOffset.y(), step);
+    const float fracOffsetZ = -fmod(m_panOffset.z(), step);
+
+    // Use extended range for numbers (matching createGridData)
+    const float margin = step * 2.0f;
+    const float extendedMinX = boxMinX - margin;
+    const float extendedMaxX = boxMaxX + margin;
+    const float extendedMinY = boxMinY - margin;
+    const float extendedMaxY = boxMaxY + margin;
+    const float extendedMinZ = boxMinZ - margin;
+    const float extendedMaxZ = boxMaxZ + margin;
+
+    // Calculate grid line positions (matching createGridData)
+    const int startX = (int)floor(extendedMinX / step);
+    const int endX = (int)ceil(extendedMaxX / step);
+    const int startY = (int)floor(extendedMinY / step);
+    const int endY = (int)ceil(extendedMaxY / step);
+    const int startZ = (int)floor(extendedMinZ / step);
+    const int endZ = (int)ceil(extendedMaxZ / step);
+
+    // Determine which box faces to show (matching createGridData)
+    const bool showPositiveZ = cos(elevation) * cos(azimuth) > 0;
+    const bool showPositiveY = sin(elevation) > 0;
+    const bool showPositiveX = cos(elevation) * sin(azimuth) > 0;
+
+    // Select plane positions (matching createGridData)
+    const float zPlane = showPositiveZ ? boxMinZ : boxMaxZ;
+    const float yPlane = showPositiveY ? boxMinY : boxMaxY;
+    const float xPlane = showPositiveX ? boxMaxX : boxMinX;
+
+    // Determine decimal places for clean number display
+    int decimalPlaces = (step >= 1.0f) ? 0 : (step >= 0.1f) ? 1
+                                                            : 2;
+
+    // X-axis numbers along XY plane (at far Z position)
+    for (int i = startX; i <= endX; ++i)
     {
-        float x = (float)i / numTicks * axisLength;
-        QVector3D worldPos(x, 0.0f, 0.0f);
+        float x = i * step + fracOffsetX; // Include fractional offset for smooth sliding
+        QVector3D worldPos(x, boxMinY, zPlane);
         QVector3D screenPos = worldToScreen(worldPos);
 
         if (screenPos.z() > -1.0f && screenPos.z() < 1.0f)
-        { // Within view frustum
-            QString text = QString::number(x, 'f', 1);
+        {
+            // Show the "nice" step value, not the offset position
+            float labelValue = i * step;
+            QString text = QString::number(labelValue, 'f', decimalPlaces);
             QRect textRect = painter.fontMetrics().boundingRect(text);
 
-            // Position text below the axis
             int textX = (int)screenPos.x() - textRect.width() / 2;
-            int textY = (int)screenPos.y() + 20;
+            int textY = (int)screenPos.y() + textRect.height() + 5;
 
             if (textX >= 0 && textX + textRect.width() <= width() &&
                 textY >= 0 && textY <= height())
@@ -557,20 +943,21 @@ void PlotView::renderAxisNumbers(QPainter &painter)
         }
     }
 
-    // Y-axis numbers
-    for (int i = 0; i <= numTicks; ++i)
+    // Y-axis numbers along XY plane (at far Z position)
+    for (int i = startY; i <= endY; ++i)
     {
-        float y = (float)i / numTicks * axisLength;
-        QVector3D worldPos(0.0f, y, 0.0f);
+        float y = i * step + fracOffsetY; // Include fractional offset for smooth sliding
+        QVector3D worldPos(boxMinX, y, zPlane);
         QVector3D screenPos = worldToScreen(worldPos);
 
         if (screenPos.z() > -1.0f && screenPos.z() < 1.0f)
-        { // Within view frustum
-            QString text = QString::number(y, 'f', 1);
+        {
+            // Show the "nice" step value, not the offset position
+            float labelValue = i * step;
+            QString text = QString::number(labelValue, 'f', decimalPlaces);
             QRect textRect = painter.fontMetrics().boundingRect(text);
 
-            // Position text to the left of the axis
-            int textX = (int)screenPos.x() - textRect.width() - 10;
+            int textX = (int)screenPos.x() - textRect.width() - 5;
             int textY = (int)screenPos.y() + textRect.height() / 2;
 
             if (textX >= 0 && textX + textRect.width() <= width() &&
@@ -581,37 +968,42 @@ void PlotView::renderAxisNumbers(QPainter &painter)
         }
     }
 
-    // Z-axis numbers (only in 3D mode)
-    if (m_plotMode == PLOT_3D)
+    // Z-axis numbers along XZ plane (at far Y position) when in 3D mode
+    if (m_plotMode == PLOT_3D || m_projectionMode == PERSPECTIVE_PROJECTION)
     {
-        for (int i = 0; i <= numTicks; ++i)
+        for (int i = startZ; i <= endZ; ++i)
         {
-            float z = (float)i / numTicks * axisLength;
-            QVector3D worldPos(0.0f, 0.0f, z);
+            float z = i * step + fracOffsetZ; // Include fractional offset for smooth sliding
+            QVector3D worldPos(boxMinX, yPlane, z);
             QVector3D screenPos = worldToScreen(worldPos);
 
             if (screenPos.z() > -1.0f && screenPos.z() < 1.0f)
-            { // Within view frustum
-                QString text = QString::number(z, 'f', 1);
+            {
+                // Show the "nice" step value, not the offset position
+                float labelValue = i * step;
+                QString text = QString::number(labelValue, 'f', decimalPlaces);
                 QRect textRect = painter.fontMetrics().boundingRect(text);
 
-                // Position text to the right of the axis
-                int textX = (int)screenPos.x() + 10;
+                int textX = (int)screenPos.x() + 5;
                 int textY = (int)screenPos.y() + textRect.height() / 2;
 
                 if (textX >= 0 && textX + textRect.width() <= width() &&
                     textY >= 0 && textY <= height())
                 {
+                    painter.setPen(QPen(Qt::cyan, 1)); // Different color for Z
                     painter.drawText(textX, textY, text);
+                    painter.setPen(QPen(Qt::black, 1)); // Reset color
                 }
             }
         }
     }
 
-    // Axis labels
+    // Axis labels positioned at box edges
+    const float labelOffset = boxHalfSize + 1.0f;
+
     if (!m_xLabel.isEmpty())
     {
-        QVector3D xLabelPos = worldToScreen(QVector3D(axisLength + 0.5f, 0.0f, 0.0f));
+        QVector3D xLabelPos = worldToScreen(QVector3D(boxMaxX + 1.0f, boxMinY, zPlane));
         if (xLabelPos.z() > -1.0f && xLabelPos.z() < 1.0f)
         {
             painter.setPen(QPen(Qt::red, 1));
@@ -622,7 +1014,7 @@ void PlotView::renderAxisNumbers(QPainter &painter)
 
     if (!m_yLabel.isEmpty())
     {
-        QVector3D yLabelPos = worldToScreen(QVector3D(0.0f, axisLength + 0.5f, 0.0f));
+        QVector3D yLabelPos = worldToScreen(QVector3D(boxMinX, boxMaxY + 1.0f, zPlane));
         if (yLabelPos.z() > -1.0f && yLabelPos.z() < 1.0f)
         {
             painter.setPen(QPen(Qt::green, 1));
@@ -633,12 +1025,64 @@ void PlotView::renderAxisNumbers(QPainter &painter)
 
     if (!m_zLabel.isEmpty() && m_plotMode == PLOT_3D)
     {
-        QVector3D zLabelPos = worldToScreen(QVector3D(0.0f, 0.0f, axisLength + 0.5f));
+        QVector3D zLabelPos = worldToScreen(QVector3D(boxMinX, yPlane, boxMaxZ + 1.0f));
         if (zLabelPos.z() > -1.0f && zLabelPos.z() < 1.0f)
         {
             painter.setPen(QPen(Qt::blue, 1));
             painter.setFont(QFont("Arial", 10, QFont::Bold));
             painter.drawText((int)zLabelPos.x() + 5, (int)zLabelPos.y(), m_zLabel);
+        }
+    }
+
+    // Add plane labels at center of each background plane
+    painter.setPen(QPen(Qt::black, 2));
+    painter.setFont(QFont("Arial", 16, QFont::Bold));
+
+    // XY plane label (at center of XY plane at far Z position)
+    QVector3D xyPlaneCenter = worldToScreen(QVector3D(0.0f, 0.0f, zPlane));
+    if (xyPlaneCenter.z() > -1.0f && xyPlaneCenter.z() < 1.0f)
+    {
+        QString planeLabel = "XY";
+        QRect textRect = painter.fontMetrics().boundingRect(planeLabel);
+        int textX = (int)xyPlaneCenter.x() - textRect.width() / 2;
+        int textY = (int)xyPlaneCenter.y() + textRect.height() / 2;
+
+        if (textX >= 0 && textX + textRect.width() <= width() &&
+            textY >= 0 && textY <= height())
+        {
+            painter.drawText(textX, textY, planeLabel);
+        }
+    }
+
+    // XZ plane label (at center of XZ plane at far Y position)
+    QVector3D xzPlaneCenter = worldToScreen(QVector3D(0.0f, yPlane, 0.0f));
+    if (xzPlaneCenter.z() > -1.0f && xzPlaneCenter.z() < 1.0f)
+    {
+        QString planeLabel = "XZ";
+        QRect textRect = painter.fontMetrics().boundingRect(planeLabel);
+        int textX = (int)xzPlaneCenter.x() - textRect.width() / 2;
+        int textY = (int)xzPlaneCenter.y() + textRect.height() / 2;
+
+        if (textX >= 0 && textX + textRect.width() <= width() &&
+            textY >= 0 && textY <= height())
+        {
+            painter.drawText(textX, textY, planeLabel);
+        }
+    }
+
+    // YZ plane label (at center of YZ plane at far X position)
+    QVector3D yzPlaneCenter = worldToScreen(QVector3D(xPlane, 0.0f, 0.0f));
+    if (yzPlaneCenter.z() > -1.0f && yzPlaneCenter.z() < 1.0f)
+    {
+        QString planeLabel = "YZ";
+        QRect textRect = painter.fontMetrics().boundingRect(planeLabel);
+        int textX = (int)yzPlaneCenter.x() - textRect.width() / 2;
+        int textY = (int)yzPlaneCenter.y() + textRect.height() / 2;
+
+        if (textX >= 0 && textX + textRect.width() <= width() &&
+            textY >= 0 && textY <= height())
+        {
+            painter.drawText(textX, textY, planeLabel);
         }
     }
 }
@@ -698,14 +1142,14 @@ void PlotView::renderInteractionMode(QPainter &painter)
         modeText = "ZOOM (Z) - Drag up/down to zoom";
         break;
     case PAN_MODE:
-        modeText = "PAN (P) - Drag to pan view";
+        modeText = "PAN (P) - Drag to pan XY, Shift+Drag to pan Z";
         break;
     }
 
     // Add projection mode info to the mode text
     QString projectionInfo = QString(" | %1 | FOV: %2°")
-        .arg(m_projectionMode == PERSPECTIVE_PROJECTION ? "Perspective" : "Orthographic")
-        .arg(QString::number(m_fov, 'f', 1));
+                                 .arg(m_projectionMode == PERSPECTIVE_PROJECTION ? "Perspective" : "Orthographic")
+                                 .arg(QString::number(m_fov, 'f', 1));
     modeText += projectionInfo;
 
     // Draw mode indicator in top-left corner
@@ -719,15 +1163,15 @@ void PlotView::renderInteractionMode(QPainter &painter)
     {
         painter.setPen(QPen(Qt::white, 1));
         painter.setFont(QFont("Arial", 12, QFont::Bold));
-        
+
         QString angleText = QString("(%1°, %2°)")
-            .arg(QString::number(m_viewAngles.getAzimuth() * 180.0 / M_PI, 'f', 1))
-            .arg(QString::number(m_viewAngles.getElevation() * 180.0 / M_PI, 'f', 1));
-        
+                                .arg(QString::number(m_viewAngles.getAzimuth() * 180.0 / M_PI, 'f', 1))
+                                .arg(QString::number(m_viewAngles.getElevation() * 180.0 / M_PI, 'f', 1));
+
         QRect angleRect = painter.fontMetrics().boundingRect(angleText);
         int angleX = width() - angleRect.width() - 15;
         int angleY = height() - 30;
-        
+
         // Semi-transparent background for better readability
         painter.fillRect(angleX - 5, angleY - angleRect.height() - 5, angleRect.width() + 10, angleRect.height() + 6,
                          QColor(0, 0, 0, 128));
@@ -741,7 +1185,7 @@ void PlotView::renderInteractionMode(QPainter &painter)
 
         QStringList shortcuts = {
             "R - Rotate mode",
-            "Z - Zoom mode", 
+            "Z - Zoom mode",
             "P - Pan mode",
             "V - Toggle projection",
             "N/M - FOV (perspective)",
@@ -858,12 +1302,17 @@ void PlotView::onNewDataReceived()
     // Update visualization
     if (!m_realTimeBuffer.empty())
     {
-        // Convert to plot format
+        // Convert to plot format with newest data at x=0
         std::vector<float> xData, yData, zData;
+
+        // Get the timestamp of the most recent data point
+        double latestTimestamp = m_realTimeBuffer.back().timestamp;
 
         for (const auto &point : m_realTimeBuffer)
         {
-            xData.push_back(static_cast<float>(point.timestamp));
+            // Calculate age of each point relative to the latest data
+            float age = static_cast<float>(latestTimestamp - point.timestamp);
+            xData.push_back(age); // Age 0 = newest data at x=0, older data at positive x
             yData.push_back(point.value);
             zData.push_back(static_cast<float>(point.channel)); // Use channel as Z
         }
@@ -902,12 +1351,14 @@ void PlotView::toggleProjectionMode()
     {
         m_projectionMode = PERSPECTIVE_PROJECTION;
     }
+    createBackgroundPlaneData(); // Update background planes for new projection mode
     update();
 }
 
 void PlotView::setProjectionMode(ProjectionMode mode)
 {
     m_projectionMode = mode;
+    createBackgroundPlaneData(); // Update background planes for new projection mode
     update();
 }
 
@@ -943,4 +1394,48 @@ void PlotView::setFOV(float fov)
 float PlotView::getFOV() const
 {
     return m_fov;
+}
+
+// Dynamic grid helper functions
+float PlotView::getVisibleWorldSize() const
+{
+    // Calculate the visible world size based on zoom and projection
+    if (m_projectionMode == ORTHOGRAPHIC_PROJECTION)
+    {
+        // For orthographic projection, zoom multiplies the visible area
+        // Higher zoom = larger visible area (zoomed out)
+        return 10.0f * m_zoom; // Base size of 10 units, scaled by zoom
+    }
+    else
+    {
+        // For perspective projection, it's more complex and depends on distance
+        // For simplicity, use similar calculation but consider FOV
+        float baseSizeFromFOV = 10.0f * tan(m_fov * M_PI / 360.0f); // Half FOV in radians
+        return baseSizeFromFOV * m_zoom;                            // Same direction as orthographic
+    }
+}
+
+float PlotView::calculateOptimalGridStep() const
+{
+    const float visibleSize = getVisibleWorldSize();
+    const int targetGridLines = 10; // Target number of grid lines visible
+
+    // Calculate raw step size to get target number of lines
+    float rawStep = visibleSize / targetGridLines;
+
+    // Round to "nice" numbers (1, 2, 5, 10, 20, 50, etc.)
+    float magnitude = pow(10.0f, floor(log10(rawStep)));
+    float normalizedStep = rawStep / magnitude;
+
+    float niceStep;
+    if (normalizedStep <= 1.0f)
+        niceStep = 1.0f;
+    else if (normalizedStep <= 2.0f)
+        niceStep = 2.0f;
+    else if (normalizedStep <= 5.0f)
+        niceStep = 5.0f;
+    else
+        niceStep = 10.0f;
+
+    return niceStep * magnitude;
 }

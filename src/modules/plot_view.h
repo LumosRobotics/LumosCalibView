@@ -106,8 +106,12 @@ private:
     void setupBuffers();
     void createGridData();
     void createAxisData();
+    void createOriginPlaneData();
+    void createBackgroundPlaneData();
     void renderGrid();
     void renderAxes();
+    void renderOriginPlanes();
+    void renderBackgroundPlanes();
     void renderData();
     void renderAxisNumbers(QPainter& painter);
     void renderInteractionMode(QPainter& painter);
@@ -115,6 +119,10 @@ private:
     QMatrix4x4 getViewMatrix() const;
     QMatrix4x4 getProjectionMatrix() const;
     QVector3D worldToScreen(const QVector3D& worldPos) const;
+    
+    // Dynamic grid helpers
+    float calculateOptimalGridStep() const;
+    float getVisibleWorldSize() const;
 
     // OpenGL resources
     QOpenGLShaderProgram* m_shaderProgram;
@@ -127,11 +135,19 @@ private:
     
     QOpenGLBuffer m_axisVertexBuffer;
     QOpenGLVertexArrayObject m_axisVAO;
+    
+    QOpenGLBuffer m_originPlaneVertexBuffer;
+    QOpenGLVertexArrayObject m_originPlaneVAO;
+    
+    QOpenGLBuffer m_backgroundPlaneVertexBuffer;
+    QOpenGLVertexArrayObject m_backgroundPlaneVAO;
 
     // Plot data
     std::vector<PlotData> m_plotDataSeries;
     std::vector<float> m_gridVertices;
     std::vector<float> m_axisVertices;
+    std::vector<float> m_originPlaneVertices;
+    std::vector<float> m_backgroundPlaneVertices;
     
     // View state
     ViewAngles m_viewAngles;

@@ -54,8 +54,8 @@ int main(int argc, char *argv[])
     multiPlotContainer->setStyleSheet("background-color: #f0f0f0;");
     window.setCentralWidget(multiPlotContainer);
     
-    // Create a 2x2 grid of plot views initially
-    multiPlotContainer->createGridLayout(2, 2);
+    // Create a single plot view covering the whole window
+    multiPlotContainer->createGridLayout(1, 1);
     
     // Configure the first plot view with TCP data receiver
     const auto& plotViews = multiPlotContainer->getPlotViews();
