@@ -1,0 +1,3 @@
+ * Rename to "LumosLive"
+ * Read from USB, UART (serial), and network (TCP, UDP). Perhaps extend to CAN with CAN2USB device.
+ * Configure custom commands through file, e.g. "vel 2.0", also possibly show up in ad hoc GUI

@@ -114,6 +114,7 @@ private:
     void renderBackgroundPlanes();
     void renderData();
     void renderAxisNumbers(QPainter& painter);
+    void renderAxisLabels(QPainter& painter);
     void renderInteractionMode(QPainter& painter);
     
     QMatrix4x4 getViewMatrix() const;

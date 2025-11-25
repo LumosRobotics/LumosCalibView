@@ -354,10 +354,8 @@ void PlotView::paintGL()
         renderOriginPlanes(); // Always show origin plane lines when grid is shown
     }
 
-    if (m_showAxes)
-    {
-        renderAxes();
-    }
+    // Always render origin axes for reference
+    renderAxes();
 
     renderData();
 
@@ -375,6 +373,9 @@ void PlotView::paintEvent(QPaintEvent *event)
 
     // Always render axis numbers even if axis lines are disabled
     renderAxisNumbers(painter);
+    
+    // Render axis labels (X, Y, Z) at the end of each axis line
+    renderAxisLabels(painter);
 
     // Show current interaction mode
     renderInteractionMode(painter);
@@ -687,18 +688,28 @@ void PlotView::mouseMoveEvent(QMouseEvent *event)
     {
         float panSpeed = 0.01f * m_zoom;
         
-        // Check if Shift key is pressed for Z-panning
-        if (event->modifiers() & Qt::ShiftModifier)
-        {
-            // Shift+drag for Z-panning: horizontal mouse movement controls Z
-            m_panOffset.setZ(m_panOffset.z() + delta.x() * panSpeed);
-        }
-        else
-        {
-            // Normal XY panning
-            m_panOffset.setX(m_panOffset.x() + delta.x() * panSpeed);
-            m_panOffset.setY(m_panOffset.y() - delta.y() * panSpeed); // Invert Y for intuitive panning
-        }
+        // Convert mouse movement to 3D world coordinates based on current view angles
+        double azimuth = m_viewAngles.getAzimuth();
+        double elevation = m_viewAngles.getElevation();
+        
+        // Calculate the right and up vectors in world space based on view orientation
+        // Right vector (screen X direction in world space)
+        float rightX = cos(azimuth);
+        float rightY = sin(azimuth);
+        float rightZ = 0.0f;
+        
+        // Up vector (screen Y direction in world space) 
+        float upX = -sin(azimuth) * sin(elevation);
+        float upY = cos(azimuth) * sin(elevation);
+        float upZ = cos(elevation);
+        
+        // Apply mouse delta to 3D pan offset using view-oriented vectors
+        float deltaX = delta.x() * panSpeed;
+        float deltaY = -delta.y() * panSpeed; // Invert Y for intuitive panning
+        
+        m_panOffset.setX(m_panOffset.x() + deltaX * rightX + deltaY * upX);
+        m_panOffset.setY(m_panOffset.y() + deltaX * rightY + deltaY * upY);
+        m_panOffset.setZ(m_panOffset.z() + deltaX * rightZ + deltaY * upZ);
         
         createGridData();                                         // Update grid lines to shift within the fixed box frame
         createOriginPlaneData();                                  // Update origin planes for new pan position
@@ -1087,6 +1098,66 @@ void PlotView::renderAxisNumbers(QPainter &painter)
     }
 }
 
+void PlotView::renderAxisLabels(QPainter &painter)
+{
+    // Get the axis length that matches createAxisData()
+    const float axisLength = 6.0f;
+    
+    // Set font and color for axis labels
+    painter.setFont(QFont("Arial", 14, QFont::Bold));
+    
+    // X-axis label (red)
+    QVector3D xAxisEnd = worldToScreen(QVector3D(axisLength, 0.0f, 0.0f));
+    if (xAxisEnd.z() > -1.0f && xAxisEnd.z() < 1.0f)
+    {
+        painter.setPen(QPen(Qt::red, 2));
+        QString text = "X";
+        QRect textRect = painter.fontMetrics().boundingRect(text);
+        int textX = (int)xAxisEnd.x() + 5;
+        int textY = (int)xAxisEnd.y() + textRect.height() / 2;
+        
+        if (textX >= 0 && textX + textRect.width() <= width() &&
+            textY >= 0 && textY <= height())
+        {
+            painter.drawText(textX, textY, text);
+        }
+    }
+    
+    // Y-axis label (green)
+    QVector3D yAxisEnd = worldToScreen(QVector3D(0.0f, axisLength, 0.0f));
+    if (yAxisEnd.z() > -1.0f && yAxisEnd.z() < 1.0f)
+    {
+        painter.setPen(QPen(Qt::green, 2));
+        QString text = "Y";
+        QRect textRect = painter.fontMetrics().boundingRect(text);
+        int textX = (int)yAxisEnd.x() - textRect.width() / 2;
+        int textY = (int)yAxisEnd.y() - 5;
+        
+        if (textX >= 0 && textX + textRect.width() <= width() &&
+            textY >= 0 && textY <= height())
+        {
+            painter.drawText(textX, textY, text);
+        }
+    }
+    
+    // Z-axis label (blue)
+    QVector3D zAxisEnd = worldToScreen(QVector3D(0.0f, 0.0f, axisLength));
+    if (zAxisEnd.z() > -1.0f && zAxisEnd.z() < 1.0f)
+    {
+        painter.setPen(QPen(Qt::blue, 2));
+        QString text = "Z";
+        QRect textRect = painter.fontMetrics().boundingRect(text);
+        int textX = (int)zAxisEnd.x() + 5;
+        int textY = (int)zAxisEnd.y() - 5;
+        
+        if (textX >= 0 && textX + textRect.width() <= width() &&
+            textY >= 0 && textY <= height())
+        {
+            painter.drawText(textX, textY, text);
+        }
+    }
+}
+
 void PlotView::keyPressEvent(QKeyEvent *event)
 {
     switch (event->key())
@@ -1142,7 +1213,7 @@ void PlotView::renderInteractionMode(QPainter &painter)
         modeText = "ZOOM (Z) - Drag up/down to zoom";
         break;
     case PAN_MODE:
-        modeText = "PAN (P) - Drag to pan XY, Shift+Drag to pan Z";
+        modeText = "PAN (P) - Drag to pan view";
         break;
     }
 
